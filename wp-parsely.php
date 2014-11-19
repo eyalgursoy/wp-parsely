@@ -40,15 +40,18 @@ class Parsely {
     const MENU_TITLE          = 'Parse.ly';            // Text to be used for the menu as seen in Settings sub-menu
     const MENU_PAGE_TITLE     = 'Parse.ly > Settings'; // Text shown in <title></title> when the settings screen is viewed
     const OPTIONS_KEY         = 'parsely';             // Defines the key used to store options in the WP database
+    // const NETWORK_OPTIONS_KEY = 'parsely_network';     // Defines the key used to store network/multisite options in the WP database
     const CAPABILITY          = 'manage_options';      // The capability required for the user to administer settings
     const CATEGORY_DELIMITER  = '~-|@|!{-~';
+    const NETWORK_MENU_PAGE_TITLE = 'Parse.ly > Network Settings';
 
     private $optionDefaults     = array('apikey' => '',
                                         'content_id_prefix' => '',
                                         'use_top_level_cats' => false,
                                         'child_cats_as_tags' => false,
                                         'track_authenticated_users' => true,
-                                        'lowercase_tags' => true);
+                                        'lowercase_tags' => true,
+                                        'override_site_settings' => false);
     private $implementationOpts = array('standard' => 'Standard',
                                         'dom_free' => 'DOM-Free');
 
@@ -68,6 +71,8 @@ class Parsely {
         // admin_menu and a settings link
         add_action('admin_head', array($this, 'add_admin_header'));
         add_action('admin_menu', array($this, 'add_settings_sub_menu'));
+        add_action('network_admin_menu', array($this, 'add_network_settings_sub_menu'));
+        add_action('network_admin_edit_update_'.Parsely::MENU_SLUG, array($this, 'save_network_settings'));
         add_action('admin_init', array($this, 'initialize_settings'));
         // display warning when plugin hasn't been configured
         add_action('admin_footer', array($this, 'display_admin_warning'));
@@ -94,6 +99,17 @@ class Parsely {
                          array($this, 'display_settings'));
     }
 
+    /* Parsely network settings page */
+    public function add_network_settings_sub_menu() {
+        add_submenu_page('settings.php',
+                         Parsely::NETWORK_MENU_PAGE_TITLE,
+                         Parsely::MENU_TITLE,
+                         'manage_network_options',
+                         Parsely::MENU_SLUG,
+                         array($this, 'display_network_settings')
+                         );
+    }
+
     /* Parse.ly settings screen (options-general.php?page=[MENU_SLUG]) */
     public function display_settings() {
         if ( !current_user_can(Parsely::CAPABILITY) ) {
@@ -101,6 +117,40 @@ class Parsely {
         }
 
         include('parsely-settings.php');
+    }
+
+    public function display_network_settings() {
+        if ( !current_user_can('manage_network_options') ) {
+            wp_die(__('You do not have sufficient permissions to access this page.'));
+        }
+
+        include('parsely-network-settings.php');
+    }
+
+    public function save_network_settings() {
+        if ( !current_user_can('manage_network_options') ) {
+            wp_die(__('You do not have sufficient permissions to access this page.'));
+        }
+
+        // Verify nonce
+        check_admin_referer('parsely_update_network_settings');
+
+        // Get DB-ready options to save (also does error checking)
+        $options = $_REQUEST['parsely'];
+        $options = $this->validate_options($options);
+        $errors = get_settings_errors();
+        $updated = 'false';
+        if ( empty($errors) ) {
+            // Useful to disambiguate get_site_option output later
+            $options['network_wide'] = true;
+            update_site_option(Parsely::OPTIONS_KEY, $options);
+            $updated = 'true';
+        }
+        set_transient('settings_errors', $errors);
+
+        wp_redirect(add_query_arg(array('page' => Parsely::MENU_SLUG, 'settings-updated' => $updated),
+                    network_admin_url('settings.php')));
+        exit();
     }
 
     public function initialize_settings() {
@@ -133,24 +183,29 @@ class Parsely {
         add_settings_section('optional_settings', 'Optional Settings',
                              array($this, 'print_optional_settings'),
                              Parsely::MENU_SLUG);
-        // Content ID Prefix
-        $h = 'If you use more than one content management system (e.g. ' .
-             'WordPress and Drupal), you may end up with duplicate content ' .
-             'IDs. Adding a Content ID Prefix will ensure the content IDs ' .
-             'from WordPress will not conflict with other content management ' .
-             'systems. We recommend using "WP-" for your prefix.';
-        $field_args = array(
-            'option_key' => 'content_id_prefix',
-            'optional_args' => array(
-                'placeholder' => 'WP-'),
-            'help_text' => $h,
-            'requires_recrawl' => true
-        );
-        add_settings_field('content_id_prefix',
-                           'Content ID Prefix <div class="help-icons"></div>',
-                           array($this, 'print_text_tag'),
-                           Parsely::MENU_SLUG, 'optional_settings',
-                           $field_args);
+
+        if (!is_multisite()) {
+            // Content ID Prefix
+            // We only add this option on single site installs, on multisite
+            // instances, we'll automatically construct a content ID prefix
+            $h = 'If you use more than one content management system (e.g. ' .
+                 'WordPress and Drupal), you may end up with duplicate content ' .
+                 'IDs. Adding a Content ID Prefix will ensure the content IDs ' .
+                 'from WordPress will not conflict with other content management ' .
+                 'systems. We recommend using "WP-" for your prefix.';
+            $field_args = array(
+                'option_key' => 'content_id_prefix',
+                'optional_args' => array(
+                    'placeholder' => 'WP-'),
+                'help_text' => $h,
+                'requires_recrawl' => true
+            );
+            add_settings_field('content_id_prefix',
+                               'Content ID Prefix <div class="help-icons"></div>',
+                               array($this, 'print_text_tag'),
+                               Parsely::MENU_SLUG, 'optional_settings',
+                               $field_args);
+        }
 
         // Use top-level cats
         $h = 'wp-parsely will use the first category assigned to a post. ' .
@@ -219,8 +274,10 @@ class Parsely {
 
         }
 
-        // Content ID prefix
-        $input['content_id_prefix'] = sanitize_text_field($input['content_id_prefix']);
+        // Content ID prefix, may not exist if multisite
+        if (isset($input['content_id_prefix'])) {
+            $input['content_id_prefix'] = sanitize_text_field($input['content_id_prefix']);
+        }
 
         // Top-level categories
         if ( $input['use_top_level_cats'] !== 'true' && $input['use_top_level_cats'] !== 'false' ) {
@@ -252,6 +309,16 @@ class Parsely {
                                'Value passed for lowercase_tags must be either "true" or "false".');
         } else {
             $input['lowercase_tags'] = $input['lowercase_tags'] === 'true' ? true : false;
+        }
+
+        // Only applicable on network settings screen
+        if ( array_key_exists('override_site_settings', $input) ) {
+            if ( $input['override_site_settings'] !== 'true' && $input['override_site_settings'] !== 'false' ) {
+                add_settings_error(Parsely::OPTIONS_KEY, 'override_site_settings',
+                                   'Value passed for override_site_settings must be either "true" or "false".');
+            } else {
+                $input['override_site_settings'] = $input['override_site_settings'] === 'true' ? true : false;
+            }
         }
 
         return $input;
@@ -539,12 +606,33 @@ class Parsely {
     * on variables.
     */
     private function get_options() {
-        $options = get_option(Parsely::OPTIONS_KEY);
-        if ( $options === false ) {
-            $options = $this->optionDefaults;
-        } else {
+        // On multisite installs, get_site_option will return the network wide
+        // option, on normal WP installs, will be identical to get_option
+        $options = get_site_option(Parsely::OPTIONS_KEY, array());
+
+        // Merge defaults with DB-pulled options, DB-options will override defaults
+        $options = array_merge($this->optionDefaults, $options);
+
+        // Even if we have a network-wide option, still need to check that we
+        // are supposed to use it to override and if not, fall back to site
+        // specific options
+        $got_network_settings = array_key_exists('network_wide', $options) && $options['network_wide'] === true;
+        $should_use_network = array_key_exists('override_site_settings', $options) && $options['override_site_settings'] === true;
+        if ($got_network_settings && !$should_use_network) {
+            $options = get_option(Parsely::OPTIONS_KEY, array());
             $options = array_merge($this->optionDefaults, $options);
         }
+
+        // If this is a multisite install, regardless of whether we use network
+        // settings, we'll automatically add a content_id_prefix which is
+        // effectively:
+        // WP-<site_id>-<blog_id>
+        // to ensure we have no ID conflicts
+        if (is_multisite()) {
+            $blogDetails = get_blog_details(get_current_blog_id());
+            $options['content_id_prefix'] = 'WP-'.$blogDetails->site_id.'-'.$blogDetails->blog_id.'-';
+        }
+
         return $options;
     }
 
