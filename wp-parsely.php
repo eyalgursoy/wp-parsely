@@ -660,7 +660,7 @@ class Parsely {
     * Determine author name from display name, falling back to firstname +
     * lastname, then nickname and finally the nicename.
     */
-    private function get_author_name($author) {
+    protected function get_author_name($author) {
         $author_name = $author->display_name;
         if ( !empty($author_name) ) {
             return $author_name;
@@ -696,7 +696,7 @@ class Parsely {
 
     /* sanitize content
     */
-    private function get_clean_parsely_page_value($val) {
+    protected function get_clean_parsely_page_value($val) {
         if ( is_string($val) ) {
             $val = str_replace("\n", '', $val);
             $val = str_replace("\r", '', $val);
